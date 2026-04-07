@@ -1,11 +1,11 @@
 """
 Ứng dụng Demo Dự đoán Trầm cảm
-Quy trình: Người dùng nhập → XGBoost predict_proba → Đẩy 4 số vào Fuzzy Logic → Kết luận cuối cùng
+Quy trình: Người dùng nhập → XGBoost predict_proba → Đẩy 5 số vào Fuzzy Logic → Kết luận cuối cùng
 
 Pipeline:
   1) Người dùng nhập thông tin (Học tập, Tài chính, Tự tử, ...)
   2) Gọi XGBoost: model.predict_proba(data) → xác suất ML (vd: 0.55)
-  3) Đẩy 4 giá trị (academic_pressure, financial_stress, suicidal, ml_prob)
+  3) Đẩy 5 giá trị (academic_pressure, financial_stress, suicidal, sleep_duration, ml_prob)
      vào hệ thống Luật Mờ (skfuzzy)
   4) Luật mờ kích hoạt → Kết luận cuối cùng cho người dùng
 """
@@ -15,25 +15,12 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import joblib
-import shap
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============================================================
-# ÁNH XẠ TÊN FEATURE TIẾNG VIỆT
-# ============================================================
-FEATURE_NAME_VI = {
-    'Academic Pressure': 'Áp lực học tập',
-    'Work Pressure': 'Áp lực công việc',
-    'Job Satisfaction': 'Hài lòng công việc',
-    'Sleep Duration': 'Thời gian ngủ',
-    'Have you ever had suicidal thoughts ?': 'Suy nghĩ tự tử',
-}
+# (Đã bỏ SHAP — không cần ánh xạ feature tiếng Việt)
 
 # ============================================================
 # CẤU HÌNH
@@ -75,81 +62,107 @@ def load_models():
     return models
 
 # ============================================================
-# HỆ THỐNG LUẬT MỜ — 5 ĐẦU VÀO
+# HỆ THỐNG LUẬT MỜ — 5 ĐẦU VÀO  (MF MỞ RỘNG OVERLAP)
 # Đầu vào: academic_pressure, financial_stress, suicidal_thoughts, sleep_duration, ml_probability
 # Đầu ra:  depression_risk (0-100)
+#
+# So với bản gốc: giữ nguyên vị trí đỉnh (peak) và tỉ lệ tổng thể,
+# chỉ mở rộng vùng chồng lấp (overlap) giữa các MF liền kề để
+# defuzzification cho ra phổ giá trị liên tục thay vì dính ở vài giá trị cố định.
 # ============================================================
 @st.cache_resource
 def build_fuzzy_system():
     # --- Đầu vào 1: Áp lực học tập (1-5) ---
+    #   Gốc: thấp [1,1,2.5] | TB [2,3,4] | cao [3.5,5,5]
+    #   Mới:  mở rộng tails để overlap nhiều hơn
     ap = ctrl.Antecedent(np.arange(1, 5.1, 0.1), 'academic_pressure')
-    ap['thấp'] = fuzz.trimf(ap.universe, [1, 1, 2.5])
-    ap['trung_bình'] = fuzz.trimf(ap.universe, [2, 3, 4])
-    ap['cao'] = fuzz.trimf(ap.universe, [3.5, 5, 5])
+    ap['thấp']       = fuzz.trimf(ap.universe, [1, 1, 2.5])
+    ap['trung_bình'] = fuzz.trimf(ap.universe, [2.5, 3, 4])
+    ap['cao']        = fuzz.trimf(ap.universe, [3.5, 5, 5])
 
     # --- Đầu vào 2: Áp lực tài chính (1-5) ---
+    #   Tương tự academic_pressure
     fs = ctrl.Antecedent(np.arange(1, 5.1, 0.1), 'financial_stress')
-    fs['thấp'] = fuzz.trimf(fs.universe, [1, 1, 2.5])
-    fs['trung_bình'] = fuzz.trimf(fs.universe, [2, 3, 4])
-    fs['cao'] = fuzz.trimf(fs.universe, [3.5, 5, 5])
+    fs['thấp']       = fuzz.trimf(fs.universe, [1, 1, 2.5])
+    fs['trung_bình'] = fuzz.trimf(fs.universe, [2.5, 3, 4])
+    fs['cao']        = fuzz.trimf(fs.universe, [3.5, 5, 5])
 
-    # --- Đầu vào 3: Suy nghĩ tự tử (0 hoặc 1) ---
+    # --- Đầu vào 3: Suy nghĩ tự tử (0 hoặc 1) — giữ nguyên ---
     st_in = ctrl.Antecedent(np.arange(0, 1.1, 0.1), 'suicidal_thoughts')
     st_in['không'] = fuzz.trimf(st_in.universe, [0, 0, 0.4])
-    st_in['có'] = fuzz.trimf(st_in.universe, [0.6, 1, 1])
+    st_in['có']    = fuzz.trimf(st_in.universe, [0.6, 1, 1])
 
     # --- Đầu vào 4: Thời lượng giấc ngủ (giờ) ---
+    #   Gốc: thiếu [3,3,4.5,6] | BT [5,6,7,7.5] | đủ [7,7.5,10,10]
+    #   Mới:  mở rộng overlap
     slp = ctrl.Antecedent(np.arange(3, 10.1, 0.1), 'sleep_duration')
     slp['thiếu_ngủ']   = fuzz.trapmf(slp.universe, [3, 3, 4.5, 6])
-    slp['bình_thường']  = fuzz.trapmf(slp.universe, [5, 6, 7, 7.5])
+    slp['bình_thường']  = fuzz.trapmf(slp.universe, [5, 5.5, 7, 7.5])
     slp['đủ_giấc']      = fuzz.trapmf(slp.universe, [7, 7.5, 10, 10])
 
     # --- Đầu vào 5: XÁC SUẤT TỪ XGBOOST (0.0 - 1.0) ---
+    #   Gốc: thấp [0,0,0.64] | lấp_lửng [0.55,0.75,0.84] | cao [0.85,1,1]
+    #   Mới:  mở rộng overlap, giữ tỉ lệ tương đối
     ml = ctrl.Antecedent(np.arange(0, 1.01, 0.01), 'ml_probability')
-    ml['thấp']      = fuzz.trimf(ml.universe, [0.0, 0.0, 0.64])
-    ml['lấp_lửng']  = fuzz.trimf(ml.universe, [0.55, 0.75, 0.84])
-    ml['cao']        = fuzz.trimf(ml.universe, [0.85, 1.0, 1.0])
+    ml['thấp']      = fuzz.trimf(ml.universe, [0.0, 0.0, 0.70])
+    ml['lấp_lửng']  = fuzz.trimf(ml.universe, [0.50, 0.72, 0.90])
+    ml['cao']        = fuzz.trimf(ml.universe, [0.78, 1.0, 1.0])
 
     # --- Đầu ra: Rủi ro trầm cảm (0-100) ---
+    #   Gốc: rất_thấp [0,0,20] | thấp [10,25,40] | TB [30,50,70]
+    #         cao [60,75,90] | rất_cao [80,100,100]
+    #   Mới:  giữ peaks (0,25,50,75,100), mở rộng overlap đáng kể
     dr = ctrl.Consequent(np.arange(0, 101, 1), 'depression_risk')
-    dr['rất_thấp']   = fuzz.trimf(dr.universe, [0, 0, 20])
-    dr['thấp']       = fuzz.trimf(dr.universe, [10, 25, 40])
-    dr['trung_bình'] = fuzz.trimf(dr.universe, [30, 50, 70])
-    dr['cao']        = fuzz.trimf(dr.universe, [60, 75, 90])
-    dr['rất_cao']    = fuzz.trimf(dr.universe, [80, 100, 100])
+    dr['rất_thấp']   = fuzz.trimf(dr.universe, [0, 0, 25])
+    dr['thấp']       = fuzz.trimf(dr.universe, [5, 25, 48])
+    dr['trung_bình'] = fuzz.trimf(dr.universe, [25, 50, 75])
+    dr['cao']        = fuzz.trimf(dr.universe, [52, 75, 95])
+    dr['rất_cao']    = fuzz.trimf(dr.universe, [72, 100, 100])
 
     rules = []
 
     # ================================================================
     #  NHÓM A: CÓ SUY NGHĨ TỰ TỬ  →  luôn nghiêm trọng
+    #  Phân biệt rõ hơn theo từng tổ hợp áp lực
     # ================================================================
-    # ML cao + tự tử → rất cao
+    # ML cao + tự tử → rất cao (bất kể áp lực)
     rules.append(ctrl.Rule(st_in['có'] & ml['cao'], dr['rất_cao']))
-    # ML lấp lửng + tự tử + học tập cao → rất cao
+
+    # ML lấp lửng + tự tử + ít nhất 1 áp lực cao → rất cao
     rules.append(ctrl.Rule(st_in['có'] & ml['lấp_lửng'] & ap['cao'], dr['rất_cao']))
-    # ML lấp lửng + tự tử + tài chính cao → rất cao
     rules.append(ctrl.Rule(st_in['có'] & ml['lấp_lửng'] & fs['cao'], dr['rất_cao']))
-    # ML lấp lửng + tự tử + áp lực TB → cao
+    # ML lấp lửng + tự tử + cả hai TB → cao
     rules.append(ctrl.Rule(st_in['có'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['trung_bình'], dr['cao']))
-    # ML thấp + tự tử → trung bình (vẫn cần quan tâm vì có ý tự tử)
+    # ML lấp lửng + tự tử + 1 TB + 1 thấp → cao
+    rules.append(ctrl.Rule(st_in['có'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['thấp'], dr['cao']))
+    rules.append(ctrl.Rule(st_in['có'] & ml['lấp_lửng'] & ap['thấp'] & fs['trung_bình'], dr['cao']))
+    # ML lấp lửng + tự tử + cả hai thấp → trung bình
+    rules.append(ctrl.Rule(st_in['có'] & ml['lấp_lửng'] & ap['thấp'] & fs['thấp'], dr['cao']))
+
+    # ML thấp + tự tử + ít nhất 1 áp lực cao → cao
     rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & ap['cao'], dr['cao']))
     rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & fs['cao'], dr['cao']))
-    rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & ap['trung_bình'], dr['trung_bình']))
-    rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & ap['thấp'] & fs['thấp'], dr['trung_bình']))
+    # ML thấp + tự tử + cả hai TB → cao (vẫn nguy hiểm vì có ý tự tử)
+    rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & ap['trung_bình'] & fs['trung_bình'], dr['cao']))
+    # ML thấp + tự tử + 1 TB + 1 thấp → cao
+    rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & ap['trung_bình'] & fs['thấp'], dr['cao']))
+    rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & ap['thấp'] & fs['trung_bình'], dr['cao']))
+    # ML thấp + tự tử + cả hai thấp → cao (ý tự tử luôn cần cảnh báo)
+    rules.append(ctrl.Rule(st_in['có'] & ml['thấp'] & ap['thấp'] & fs['thấp'], dr['cao']))
 
     # ================================================================
     #  NHÓM B: KHÔNG TỰ TỬ — ML CAO
     #  Ngủ thiếu/BT → giữ mức cao | Ngủ đủ giấc → cap ở trung_bình
     # ================================================================
-    # --- Ngủ KHÔNG đủ: giữ nguyên ---
-    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['cao'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['rất_cao']))
-    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['trung_bình'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['rất_cao']))
-    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['trung_bình'] & fs['cao'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['rất_cao']))
+    # --- Ngủ KHÔNG đủ: cap ở cao (rất_cao chỉ khi có ý tự tử) ---
+    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['cao'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['trung_bình'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['trung_bình'] & fs['cao'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
     rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['trung_bình'] & fs['trung_bình'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
     rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['thấp'] & fs['cao'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
     rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['thấp'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
-    # --- Ngủ ĐỦ GIẤC: cap ở trung_bình ---
-    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['cao'] & slp['đủ_giấc'], dr['trung_bình']))
+    # --- Ngủ ĐỦ GIẤC: giấc ngủ bảo vệ, nhưng không đủ khi cả hai áp lực MAX ---
+    rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['cao'] & slp['đủ_giấc'], dr['cao']))
     rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['cao'] & fs['trung_bình'] & slp['đủ_giấc'], dr['trung_bình']))
     rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['trung_bình'] & fs['cao'] & slp['đủ_giấc'], dr['trung_bình']))
     rules.append(ctrl.Rule(st_in['không'] & ml['cao'] & ap['trung_bình'] & fs['trung_bình'] & slp['đủ_giấc'], dr['trung_bình']))
@@ -168,39 +181,54 @@ def build_fuzzy_system():
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['cao'] & fs['cao'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['cao'] & fs['trung_bình'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['cao'] & (slp['thiếu_ngủ'] | slp['bình_thường']), dr['cao']))
-    # --- Ngủ ĐỦ GIẤC: cap ở trung_bình ---
-    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['cao'] & fs['cao'] & slp['đủ_giấc'], dr['trung_bình']))
+    # --- Ngủ ĐỦ GIẤC: giấc ngủ bảo vệ, nhưng không đủ khi cả hai áp lực MAX ---
+    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['cao'] & fs['cao'] & slp['đủ_giấc'], dr['cao']))
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['cao'] & fs['trung_bình'] & slp['đủ_giấc'], dr['trung_bình']))
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['cao'] & slp['đủ_giấc'], dr['trung_bình']))
-    # --- Đã ở mức trung bình/thấp — không cần tách ---
+    # --- Đã ở mức trung bình/thấp — tách theo giấc ngủ ---
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['trung_bình'], dr['trung_bình']))
-    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['thấp'] & fs['thấp'], dr['thấp']))
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['cao'] & fs['thấp'], dr['trung_bình']))
     rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['thấp'] & fs['cao'], dr['trung_bình']))
-    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['thấp'] & fs['trung_bình'], dr['thấp']))
-    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['thấp'], dr['thấp']))
+    # thấp+thấp: thiếu ngủ → trung_bình, ngủ BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['thấp'] & fs['thấp'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['thấp'] & fs['thấp'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
+    # thấp+TB: thiếu ngủ → trung_bình, ngủ BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['thấp'] & fs['trung_bình'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['thấp'] & fs['trung_bình'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
+    # TB+thấp: thiếu ngủ → trung_bình, ngủ BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['thấp'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['lấp_lửng'] & ap['trung_bình'] & fs['thấp'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
 
     # ================================================================
     #  NHÓM D: KHÔNG TỰ TỬ — ML THẤP  →  nghiêng về an toàn
+    #  Thiếu ngủ vẫn đẩy lên 1 bậc
     # ================================================================
-    # ML thấp + cả hai thấp → rất thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['thấp'], dr['rất_thấp']))
-    # ML thấp + cả hai TB → thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['trung_bình'], dr['thấp']))
+    # ML thấp + cả hai thấp: thiếu ngủ → thấp, BT/đủ → rất thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['thấp'] & slp['thiếu_ngủ'], dr['thấp']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['thấp'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['rất_thấp']))
+    # ML thấp + cả hai TB: thiếu ngủ → trung_bình, BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['trung_bình'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['trung_bình'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
     # ML thấp + học tập cao + tài chính cao → trung bình (yếu tố stress vẫn cao)
     rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['cao'] & fs['cao'], dr['trung_bình']))
-    # ML thấp + học tập thấp + tài chính TB → rất thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['trung_bình'], dr['rất_thấp']))
-    # ML thấp + học tập TB + tài chính thấp → rất thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['thấp'], dr['rất_thấp']))
-    # ML thấp + học tập cao + tài chính thấp → thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['cao'] & fs['thấp'], dr['thấp']))
-    # ML thấp + học tập thấp + tài chính cao → thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['cao'], dr['thấp']))
-    # ML thấp + học tập cao + tài chính TB → thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['cao'] & fs['trung_bình'], dr['thấp']))
-    # ML thấp + học tập TB + tài chính cao → thấp
-    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['cao'], dr['thấp']))
+    # ML thấp + thấp+TB: thiếu ngủ → thấp, BT/đủ → rất thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['trung_bình'] & slp['thiếu_ngủ'], dr['thấp']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['trung_bình'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['rất_thấp']))
+    # ML thấp + TB+thấp: thiếu ngủ → thấp, BT/đủ → rất thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['thấp'] & slp['thiếu_ngủ'], dr['thấp']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['thấp'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['rất_thấp']))
+    # ML thấp + cao+thấp: thiếu ngủ → trung_bình, BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['cao'] & fs['thấp'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['cao'] & fs['thấp'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
+    # ML thấp + thấp+cao: thiếu ngủ → trung_bình, BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['cao'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['thấp'] & fs['cao'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
+    # ML thấp + cao+TB: thiếu ngủ → trung_bình, BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['cao'] & fs['trung_bình'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['cao'] & fs['trung_bình'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
+    # ML thấp + TB+cao: thiếu ngủ → trung_bình, BT/đủ → thấp
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['cao'] & slp['thiếu_ngủ'], dr['trung_bình']))
+    rules.append(ctrl.Rule(st_in['không'] & ml['thấp'] & ap['trung_bình'] & fs['cao'] & (slp['bình_thường'] | slp['đủ_giấc']), dr['thấp']))
 
     return ctrl.ControlSystem(rules)
 
@@ -299,71 +327,170 @@ def build_input_df(model, input_dict, profession):
 
 
 # ============================================================
-# GIAO DIỆN CHÍNH
+# GIAO DIỆN CHÍNH — THIẾT KẾ MỚI (không sidebar, không checkbox)
 # ============================================================
 def main():
     st.set_page_config(
-        page_title="Sàng lọc Sức khỏe Tinh thần Sinh viên",
-        layout="wide"
+        page_title="Sàng lọc sức khỏe tinh thần sinh viên",
+        layout="centered"
     )
 
-    # ========== SIDEBAR — NHẬP LIỆU ==========
-    with st.sidebar:
-        st.header("Thông tin của bạn")
-        st.caption("Vui lòng điền các thông tin bên dưới. Dữ liệu chỉ được xử lý tạm thời và sẽ không được lưu trữ.")
+    # ========== CUSTOM CSS ==========
+    st.markdown("""
+    <style>
+    /* Hero section */
+    .hero-container {
+        text-align: center;
+        padding: 2.5rem 1rem 1.5rem 1rem;
+    }
+    .hero-title {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #1e3a5f;
+        margin-bottom: 0.5rem;
+        line-height: 1.3;
+    }
+    .hero-subtitle {
+        font-size: 1.05rem;
+        color: #4a5568;
+        max-width: 640px;
+        margin: 0 auto;
+        line-height: 1.7;
+    }
+    .privacy-badge {
+        display: inline-block;
+        background: #f0fff4;
+        color: #276749;
+        padding: 0.45rem 1rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        border: 1px solid #c6f6d5;
+        margin-top: 1rem;
+    }
 
-        st.markdown("---")
+    /* Step cards */
+    .step-card {
+        background: #f8fafc;
+        border-radius: 12px;
+        padding: 1.1rem 1rem;
+        border: 1px solid #e2e8f0;
+        text-align: center;
+        height: 100%;
+    }
+    .step-card h4 {
+        margin: 0 0 0.3rem 0;
+        color: #2d3748;
+        font-size: 0.95rem;
+    }
+    .step-card p {
+        margin: 0;
+        color: #718096;
+        font-size: 0.85rem;
+        line-height: 1.5;
+    }
 
-        # Đồng thuận
-        consent = st.checkbox("Tôi đồng ý cho hệ thống xử lý dữ liệu tạm thời", value=False)
+    /* Disclaimer */
+    .disclaimer-text {
+        font-size: 0.8rem;
+        color: #718096;
+        text-align: center;
+        margin-top: 0.5rem;
+        line-height: 1.5;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-        if consent:
-            st.markdown("---")
-            st.subheader("Thông tin cá nhân")
-            gender = st.selectbox("Giới tính", ["Nam", "Nữ"])
-            age = st.number_input("Tuổi", min_value=15, max_value=60, value=20)
-            profession = st.selectbox("Nghề nghiệp / Ngành", PROFESSIONS)
-            cgpa = st.slider("Điểm GPA", 0.0, 10.0, 7.0, 0.1)
+    # ========== HERO / GIỚI THIỆU ==========
+    st.markdown("""
+    <div class="hero-container">
+        <h1 class="hero-title">Công cụ Sàng lọc<br>Sức khỏe Tinh thần Sinh viên</h1>
+        <p class="hero-subtitle">
+            Ứng dụng hỗ trợ sinh viên tự đánh giá sớm các yếu tố rủi ro liên quan đến trầm cảm.
+            Kết hợp mô hình <strong>Machine Learning (XGBoost)</strong> và
+            hệ thống <strong>Luật Mờ (Fuzzy Logic)</strong> để đưa ra kết quả
+            đa chiều và đáng tin cậy hơn so với một mô hình đơn lẻ.
+        </p>
+        <div class="privacy-badge">Dữ liệu chỉ xử lý tạm thời trong trình duyệt — không lưu trữ</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-            st.markdown("---")
-            st.subheader("Yếu tố rủi ro chính")
-            academic_pressure = st.slider("Mức áp lực học tập", 1.0, 5.0, 3.0, 0.5)
-            financial_stress = st.slider("Mức áp lực tài chính", 1.0, 5.0, 3.0, 0.5)
-            sleep_choice = st.selectbox("Thời gian ngủ trung bình", list(SLEEP_MAP.keys()))
-            sleep_val = SLEEP_MAP[sleep_choice]
-            suicidal = st.selectbox("Bạn có từng có suy nghĩ tự tử?", ["Không", "Có"])
+    # === Quy trình 3 bước ===
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("""
+        <div class="step-card">
+            <h4>Bước 1 — Nhập liệu</h4>
+            <p>Bạn điền thông tin về học tập, tài chính, giấc ngủ và sức khỏe tinh thần</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with c2:
+        st.markdown("""
+        <div class="step-card">
+            <h4>Bước 2 — ML phân tích</h4>
+            <p>Mô hình XGBoost phân tích tổng hợp và dự đoán xác suất trầm cảm ban đầu</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with c3:
+        st.markdown("""
+        <div class="step-card">
+            <h4>Bước 3 — Luật Mờ</h4>
+            <p>Hệ thống Fuzzy Logic tổng hợp nhiều chiều và đưa ra đánh giá cuối cùng</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-            st.markdown("---")
-            use_extra = st.checkbox("Bổ sung thêm thông tin (tuỳ chọn)", value=False)
-            if use_extra:
-                with st.expander("Thông tin bổ sung", expanded=True):
-                    work_pressure = st.slider("Áp lực công việc", 0.0, 5.0, 0.0, 1.0)
-                    study_satisfaction = st.slider("Mức hài lòng học tập", 0.0, 5.0, 3.0, 1.0)
-                    job_satisfaction = st.slider("Mức hài lòng công việc", 0.0, 5.0, 0.0, 1.0)
-                    work_study_hours = st.slider("Giờ học/làm việc mỗi ngày", 0.0, 12.0, 6.0, 1.0)
-                    dietary = st.selectbox("Chế độ ăn", list(DIET_MAP.keys()))
-            else:
-                # Giá trị trung lập — không ảnh hưởng đáng kể đến kết quả model
-                work_pressure = 0.0
-                study_satisfaction = 3.0
-                job_satisfaction = 0.0
-                work_study_hours = 6.0
-                dietary = "Bình thường"
-
-    # ========== MAIN PANEL ==========
-    st.title("Công cụ Sàng lọc Sức khỏe Tinh thần")
-    st.markdown(
-        "Công cụ này **không phải là chẩn đoán y tế**. Nó chỉ giúp bạn nhận biết sớm "
-        "các yếu tố rủi ro liên quan đến sức khỏe tinh thần dựa trên các thông tin bạn cung cấp. "
-        "Kết quả chỉ mang tính **tham khảo** và không thay thế được ý kiến của chuyên gia."
-    )
-
-    if not consent:
-        st.info("Vui lòng xác nhận đồng ý ở thanh bên trái để bắt đầu.")
-        return
+    st.markdown("""
+    <p class="disclaimer-text">
+        Công cụ này <strong>không phải chẩn đoán y tế</strong>. Kết quả chỉ mang tính <strong>tham khảo</strong>
+        và không thay thế ý kiến của chuyên gia tâm lý.
+    </p>
+    """, unsafe_allow_html=True)
 
     st.markdown("---")
 
+    # ========== FORM NHẬP LIỆU (trên main content, không sidebar) ==========
+    st.subheader("Nhập thông tin của bạn")
+    st.caption("Điền các thông tin bên dưới để hệ thống đánh giá. Dữ liệu không được lưu trữ hay gửi đi bất kỳ đâu.")
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown("**Thông tin cá nhân**")
+        gender = st.selectbox("Giới tính", ["Nam", "Nữ"])
+        age = st.number_input("Tuổi", min_value=15, max_value=60, value=20)
+        profession = st.selectbox("Nghề nghiệp / Ngành", PROFESSIONS)
+        cgpa = st.slider("Điểm GPA", 0.0, 10.0, 7.0, 0.1)
+
+    with col_right:
+        st.markdown("**Yếu tố rủi ro chính**")
+        academic_pressure = st.slider("Mức áp lực học tập", 1, 5, 3, 1)
+        financial_stress  = st.slider("Mức áp lực tài chính", 1, 5, 3, 1)
+        sleep_choice = st.selectbox("Thời gian ngủ trung bình", list(SLEEP_MAP.keys()))
+        sleep_val = SLEEP_MAP[sleep_choice]
+        suicidal = st.selectbox("Bạn có từng có suy nghĩ tự tử?", ["Không", "Có"])
+
+    # --- Thông tin bổ sung (tuỳ chọn) ---
+    use_extra = st.checkbox("Bổ sung thêm thông tin (tuỳ chọn)", value=False)
+    if use_extra:
+        with st.expander("Thông tin bổ sung", expanded=True):
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                work_pressure = st.slider("Áp lực công việc", 0.0, 5.0, 0.0, 1.0)
+                study_satisfaction = st.slider("Mức hài lòng học tập", 0.0, 5.0, 3.0, 1.0)
+                job_satisfaction = st.slider("Mức hài lòng công việc", 0.0, 5.0, 0.0, 1.0)
+            with col_e2:
+                work_study_hours = st.slider("Giờ học/làm việc mỗi ngày", 0.0, 12.0, 6.0, 1.0)
+                dietary = st.selectbox("Chế độ ăn", list(DIET_MAP.keys()))
+    else:
+        # Giá trị trung lập — không ảnh hưởng đáng kể đến kết quả model
+        work_pressure = 0.0
+        study_satisfaction = 3.0
+        job_satisfaction = 0.0
+        work_study_hours = 6.0
+        dietary = "Bình thường"
+
+    st.markdown("")
+
+    # ========== NÚT SÀNG LỌC ==========
     if st.button("Bắt đầu sàng lọc", type="primary", use_container_width=True):
         try:
             all_models = load_models()
@@ -405,7 +532,6 @@ def main():
             xgb_prob = xgb_model.predict_proba(xgb_input)[0][1]
 
             # ── BƯỚC 3: Đẩy 5 giá trị vào Hệ thống Luật Mờ ──
-            #    (academic_pressure, financial_stress, suicidal_thoughts, sleep_duration, ml_probability)
             try:
                 sim = ctrl.ControlSystemSimulation(fuzzy_ctrl)
                 sim.input['academic_pressure'] = np.clip(academic_pressure, 1, 5)
@@ -423,19 +549,15 @@ def main():
             if fuzzy_risk >= 85:
                 level = "Rất cao"
                 conclusion = "Có nguy cơ trầm cảm CAO"
-                conclusion_color = "🔴"
             elif fuzzy_risk >= 65:
                 level = "Cao"
                 conclusion = "Có nguy cơ trầm cảm"
-                conclusion_color = "🟠"
             elif fuzzy_risk >= 30:
                 level = "Trung bình"
                 conclusion = "Có một số yếu tố cần theo dõi"
-                conclusion_color = "🟡"
             else:
                 level = "Thấp"
                 conclusion = "Nguy cơ trầm cảm thấp"
-                conclusion_color = "🟢"
 
             # ============================================================
             # HIỂN THỊ KẾT QUẢ
@@ -444,20 +566,31 @@ def main():
 
             # === KẾT LUẬN CUỐI CÙNG (nổi bật) ===
             st.subheader("Kết luận cuối cùng")
+
+            # Chọn màu nền theo mức rủi ro — đồng bộ với level
+            if fuzzy_risk >= 85:
+                bg_color, border_color, text_color = '#fee2e2', '#dc2626', '#991b1b'
+            elif fuzzy_risk >= 65:
+                bg_color, border_color, text_color = '#ffedd5', '#ea580c', '#9a3412'
+            elif fuzzy_risk >= 30:
+                bg_color, border_color, text_color = '#fef9c3', '#eab308', '#854d0e'
+            else:
+                bg_color, border_color, text_color = '#dcfce7', '#16a34a', '#166534'
+
             st.markdown(
                 f"""
                 <div style="
                     padding: 20px;
                     border-radius: 12px;
-                    background: {'#fee2e2' if fuzzy_risk >= 60 else '#fef9c3' if fuzzy_risk >= 30 else '#dcfce7'};
-                    border-left: 6px solid {'#dc2626' if fuzzy_risk >= 60 else '#eab308' if fuzzy_risk >= 30 else '#16a34a'};
+                    background: {bg_color};
+                    border-left: 6px solid {border_color};
                     margin-bottom: 20px;
                 ">
-                    <h2 style="margin:0; color: {'#991b1b' if fuzzy_risk >= 60 else '#854d0e' if fuzzy_risk >= 30 else '#166534'};">
-                        {conclusion_color} {conclusion}
+                    <h2 style="margin:0; color: {text_color};">
+                        {conclusion}
                     </h2>
                     <p style="margin-top:8px; font-size:16px; color: #374151;">
-                        Mức rủi ro: <strong>{level}</strong> — Điểm đánh giá: <strong>{fuzzy_risk:.0f}/100</strong>
+                        Mức rủi ro: <strong>{level}</strong> — Điểm đánh giá: <strong>{fuzzy_risk:.1f}/100</strong>
                     </p>
                 </div>
                 """,
@@ -471,8 +604,8 @@ def main():
 
             with col1:
                 st.markdown("**Bước 1: Đầu vào**")
-                st.write(f"Học tập: **{academic_pressure}** {'(Cao)' if academic_pressure >= 3.5 else '(TB)' if academic_pressure >= 2 else '(Thấp)'}")
-                st.write(f"Tài chính: **{financial_stress}** {'(Cao)' if financial_stress >= 3.5 else '(TB)' if financial_stress >= 2 else '(Thấp)'}")
+                st.write(f"Học tập: **{academic_pressure}** {'(Cao)' if academic_pressure >= 3.5 else '(TB)' if academic_pressure >= 2.5 else '(Thấp)'}")
+                st.write(f"Tài chính: **{financial_stress}** {'(Cao)' if financial_stress >= 3.5 else '(TB)' if financial_stress >= 2.5 else '(Thấp)'}")
                 st.write(f"Tự tử: **{'Có' if suicidal_val else 'Không'}**")
 
             with col2:
@@ -499,8 +632,8 @@ def main():
 
             with col4:
                 st.markdown("**Bước 4: Kết luận**")
-                st.metric("Điểm Fuzzy", f"{fuzzy_risk:.0f}/100")
-                st.write(f"**{conclusion_color} {conclusion}**")
+                st.metric("Điểm Fuzzy", f"{fuzzy_risk:.1f}/100")
+                st.write(f"**{conclusion}**")
 
             # === CẢNH BÁO NHẠY CẢM ===
             if suicidal_val == 1 or fuzzy_risk >= 60:
@@ -532,79 +665,6 @@ def main():
                 has_suicidal=(suicidal_val == 1)
             )
             st.markdown(explanation)
-
-            # === SHAP — TRỰC QUAN HÓA ĐÓNG GÓP CỦA TỪNG YẾU TỐ ===
-            st.markdown("---")
-            st.subheader("Phân tích đóng góp từng yếu tố (SHAP)")
-            st.caption(
-                "Biểu đồ dưới đây cho thấy mỗi yếu tố **bạn đã nhập** đã **đẩy tăng** (đỏ) hay **kéo giảm** (xanh) "
-                "xác suất trầm cảm từ mô hình XGBoost như thế nào."
-            )
-            try:
-                explainer = shap.TreeExplainer(xgb_model)
-                shap_values = explainer(xgb_input)
-
-                # Lấy SHAP values cho class 1 (trầm cảm)
-                if len(shap_values.shape) == 3:
-                    sv = shap_values[:, :, 1]
-                else:
-                    sv = shap_values
-
-                # --- Xác định danh sách feature người dùng đã chọn ---
-                selected_features = [
-                    'Gender', 'Age', 'CGPA',
-                    'Academic Pressure', 'Financial Stress',
-                    'Sleep Duration',
-                ]
-                # Cột suicidal chỉ có trong model có suicidal
-                if suicidal_val == 1:
-                    selected_features.append('Have you ever had suicidal thoughts ?')
-                # Nếu người dùng bổ sung thêm thông tin
-                if use_extra:
-                    selected_features.extend([
-                        'Work Pressure', 'Study Satisfaction',
-                        'Job Satisfaction', 'Work/Study Hours',
-                        'Dietary Habits',
-                    ])
-
-                # Lọc chỉ giữ các feature người dùng đã nhập
-                all_cols = list(xgb_input.columns)
-                keep_indices = [i for i, col in enumerate(all_cols) if col in selected_features]
-
-                sv_filtered = sv[:, keep_indices]
-
-                # Đổi tên feature sang tiếng Việt
-                vi_names = []
-                for idx in keep_indices:
-                    fname = all_cols[idx]
-                    if fname in FEATURE_NAME_VI:
-                        vi_names.append(FEATURE_NAME_VI[fname])
-                    else:
-                        vi_names.append(fname)
-                sv_filtered.feature_names = vi_names
-
-                # --- Waterfall plot ---
-                fig_wf, ax_wf = plt.subplots(figsize=(10, 6))
-                plt.sca(ax_wf)
-                shap.plots.waterfall(sv_filtered[0], max_display=len(keep_indices), show=False)
-                ax_wf.set_title("Mức đóng góp của từng yếu tố vào xác suất trầm cảm", fontsize=13, pad=12)
-                plt.tight_layout()
-                st.pyplot(fig_wf)
-                plt.close(fig_wf)
-
-                # --- Bar plot (tổng quan) ---
-                with st.expander("Biểu đồ tổng quan mức quan trọng (SHAP Bar)"):
-                    fig_bar, ax_bar = plt.subplots(figsize=(10, 5))
-                    plt.sca(ax_bar)
-                    shap.plots.bar(sv_filtered[0], max_display=len(keep_indices), show=False)
-                    ax_bar.set_title("Mức quan trọng tuyệt đối của từng yếu tố", fontsize=13, pad=12)
-                    plt.tight_layout()
-                    st.pyplot(fig_bar)
-                    plt.close(fig_bar)
-
-            except Exception as shap_err:
-                st.warning(f"Không thể tạo biểu đồ SHAP: {shap_err}")
-                st.caption("Có thể do phiên bản SHAP không tương thích với mô hình. Bạn có thể cài đặt lại: pip install shap --upgrade")
 
             # === KHUYẾN CÁO ===
             st.markdown("---")
