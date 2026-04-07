@@ -10,6 +10,7 @@ Pipeline:
   4) Luật mờ kích hoạt → Kết luận cuối cùng cho người dùng
 """
 
+import os
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -37,11 +38,11 @@ FEATURE_NAME_VI = {
 # ============================================================
 # CẤU HÌNH
 # ============================================================
-BASE_DIR = r"C:\Users\Thai Binh\Documents\HocHanh\Python\project\Depression Prediction"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-XGB_MODEL_PATH = BASE_DIR + r"\xgb_model.pkl"
-XGB_MODEL_NS_PATH = BASE_DIR + r"\xgb_model_ns.pkl"
-THRESHOLD_PATH = BASE_DIR + r"\threshold.pkl"
+XGB_MODEL_PATH = os.path.join(BASE_DIR, "xgb_model.pkl")
+XGB_MODEL_NS_PATH = os.path.join(BASE_DIR, "xgb_model_ns.pkl")
+THRESHOLD_PATH = os.path.join(BASE_DIR, "threshold.pkl")
 
 SLEEP_MAP = {
     "Ít hơn 5 giờ": 4,
