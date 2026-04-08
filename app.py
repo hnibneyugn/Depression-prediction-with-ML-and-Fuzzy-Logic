@@ -65,23 +65,16 @@ def load_models():
 # HỆ THỐNG LUẬT MỜ — 5 ĐẦU VÀO  (MF MỞ RỘNG OVERLAP)
 # Đầu vào: academic_pressure, financial_stress, suicidal_thoughts, sleep_duration, ml_probability
 # Đầu ra:  depression_risk (0-100)
-#
-# So với bản gốc: giữ nguyên vị trí đỉnh (peak) và tỉ lệ tổng thể,
-# chỉ mở rộng vùng chồng lấp (overlap) giữa các MF liền kề để
-# defuzzification cho ra phổ giá trị liên tục thay vì dính ở vài giá trị cố định.
 # ============================================================
 @st.cache_resource
 def build_fuzzy_system():
     # --- Đầu vào 1: Áp lực học tập (1-5) ---
-    #   Gốc: thấp [1,1,2.5] | TB [2,3,4] | cao [3.5,5,5]
-    #   Mới:  mở rộng tails để overlap nhiều hơn
     ap = ctrl.Antecedent(np.arange(1, 5.1, 0.1), 'academic_pressure')
     ap['thấp']       = fuzz.trimf(ap.universe, [1, 1, 2.5])
     ap['trung_bình'] = fuzz.trimf(ap.universe, [2.5, 3, 4])
     ap['cao']        = fuzz.trimf(ap.universe, [3.5, 5, 5])
 
     # --- Đầu vào 2: Áp lực tài chính (1-5) ---
-    #   Tương tự academic_pressure
     fs = ctrl.Antecedent(np.arange(1, 5.1, 0.1), 'financial_stress')
     fs['thấp']       = fuzz.trimf(fs.universe, [1, 1, 2.5])
     fs['trung_bình'] = fuzz.trimf(fs.universe, [2.5, 3, 4])
@@ -93,25 +86,18 @@ def build_fuzzy_system():
     st_in['có']    = fuzz.trimf(st_in.universe, [0.6, 1, 1])
 
     # --- Đầu vào 4: Thời lượng giấc ngủ (giờ) ---
-    #   Gốc: thiếu [3,3,4.5,6] | BT [5,6,7,7.5] | đủ [7,7.5,10,10]
-    #   Mới:  mở rộng overlap
     slp = ctrl.Antecedent(np.arange(3, 10.1, 0.1), 'sleep_duration')
     slp['thiếu_ngủ']   = fuzz.trapmf(slp.universe, [3, 3, 4.5, 6])
     slp['bình_thường']  = fuzz.trapmf(slp.universe, [5, 5.5, 7, 7.5])
     slp['đủ_giấc']      = fuzz.trapmf(slp.universe, [7, 7.5, 10, 10])
 
     # --- Đầu vào 5: XÁC SUẤT TỪ XGBOOST (0.0 - 1.0) ---
-    #   Gốc: thấp [0,0,0.64] | lấp_lửng [0.55,0.75,0.84] | cao [0.85,1,1]
-    #   Mới:  mở rộng overlap, giữ tỉ lệ tương đối
     ml = ctrl.Antecedent(np.arange(0, 1.01, 0.01), 'ml_probability')
     ml['thấp']      = fuzz.trimf(ml.universe, [0.0, 0.0, 0.70])
     ml['lấp_lửng']  = fuzz.trimf(ml.universe, [0.50, 0.72, 0.90])
     ml['cao']        = fuzz.trimf(ml.universe, [0.78, 1.0, 1.0])
 
     # --- Đầu ra: Rủi ro trầm cảm (0-100) ---
-    #   Gốc: rất_thấp [0,0,20] | thấp [10,25,40] | TB [30,50,70]
-    #         cao [60,75,90] | rất_cao [80,100,100]
-    #   Mới:  giữ peaks (0,25,50,75,100), mở rộng overlap đáng kể
     dr = ctrl.Consequent(np.arange(0, 101, 1), 'depression_risk')
     dr['rất_thấp']   = fuzz.trimf(dr.universe, [0, 0, 25])
     dr['thấp']       = fuzz.trimf(dr.universe, [5, 25, 48])
@@ -327,7 +313,7 @@ def build_input_df(model, input_dict, profession):
 
 
 # ============================================================
-# GIAO DIỆN CHÍNH — THIẾT KẾ MỚI (không sidebar, không checkbox)
+# GIAO DIỆN CHÍNH
 # ============================================================
 def main():
     st.set_page_config(
@@ -335,7 +321,6 @@ def main():
         layout="centered"
     )
 
-    # ========== CUSTOM CSS ==========
     st.markdown("""
     <style>
     /* Hero section */
@@ -411,7 +396,7 @@ def main():
     # ========== HERO / GIỚI THIỆU ==========
     st.markdown("""
     <div class="hero-container">
-        <h1 class="hero-title">Công cụ Sàng lọc<br>Sức khỏe Tinh thần Sinh viên</h1>
+        <h1 class="hero-title">Công cụ sàng lọc<br>sức khỏe tinh thần sinh viên</h1>
         <p class="hero-subtitle">
             Ứng dụng hỗ trợ sinh viên tự đánh giá sớm các yếu tố rủi ro liên quan đến trầm cảm.
             Kết hợp mô hình <strong>Machine Learning (XGBoost)</strong> và
