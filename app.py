@@ -376,6 +376,14 @@ def main():
         border: 1px solid #e2e8f0;
         text-align: center;
         height: 100%;
+        margin-bottom: 0.75rem;
+    }
+
+    /* Mobile: stack cards vertically with clear spacing */
+    @media (max-width: 768px) {
+        .step-card {
+            margin-bottom: 1rem;
+        }
     }
     .step-card h4 {
         margin: 0 0 0.3rem 0;
