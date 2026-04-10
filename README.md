@@ -256,9 +256,3 @@ Ngưỡng tối ưu dựa trên F1-score: **0.5** (F1 = 0.871)
 - Xử lý hoàn toàn phía client (trình duyệt)
 
 ---
-
-## Liên hệ hỗ trợ
-
-Nếu bạn hoặc người thân đang gặp khó khăn về sức khỏe tinh thần:
-- 📞 **Tổng đài tư vấn tâm lý:** 1900 1267 (miễn phí, 24/7)
-- 💬 Hoặc nói chuyện với một người bạn tin tưởng, thầy cô, hoặc người thân
